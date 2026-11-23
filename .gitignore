@@ -32,3 +32,8 @@ go.work.sum
 # Editor/IDE
 # .idea/
 # .vscode/
+
+# SQLite local databases
+*.db
+*.db-wal
+*.db-shm
