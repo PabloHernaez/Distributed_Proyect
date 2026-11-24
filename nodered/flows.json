@@ -1,0 +1,396 @@
+[
+    {
+        "id": "78c65a12baeaf702",
+        "type": "tab",
+        "label": "Fires in Spain",
+        "disabled": false,
+        "info": "",
+        "env": []
+    },
+    {
+        "id": "e54fda2c645c5588",
+        "type": "inject",
+        "z": "78c65a12baeaf702",
+        "name": "",
+        "props": [
+            {
+                "p": "payload"
+            },
+            {
+                "p": "topic",
+                "vt": "str"
+            }
+        ],
+        "repeat": "5",
+        "crontab": "",
+        "once": false,
+        "onceDelay": 0.1,
+        "topic": "",
+        "payload": "",
+        "payloadType": "date",
+        "x": 150,
+        "y": 180,
+        "wires": [
+            [
+                "2e91511578ed6be0"
+            ]
+        ]
+    },
+    {
+        "id": "2e91511578ed6be0",
+        "type": "sqlite",
+        "z": "78c65a12baeaf702",
+        "mydb": "1eed15b69d5fdf61",
+        "sqlquery": "fixed",
+        "sql": "SELECT * FROM active_fires;",
+        "name": "",
+        "x": 470,
+        "y": 180,
+        "wires": [
+            [
+                "4dc2cb83dd4b8116",
+                "8b084847ae497f31"
+            ]
+        ]
+    },
+    {
+        "id": "4dc2cb83dd4b8116",
+        "type": "debug",
+        "z": "78c65a12baeaf702",
+        "name": "debug 5",
+        "active": true,
+        "tosidebar": true,
+        "console": false,
+        "tostatus": false,
+        "complete": "false",
+        "statusVal": "",
+        "statusType": "auto",
+        "x": 800,
+        "y": 180,
+        "wires": []
+    },
+    {
+        "id": "8b084847ae497f31",
+        "type": "function",
+        "z": "78c65a12baeaf702",
+        "name": "FIRE INCIDENT",
+        "func": "const rows = Array.isArray(msg.payload) ? msg.payload : [];\nconst activeFires = rows.filter(r => r.active === 1);\n\n// Tiempo máximo sin reportar antes de considerar un sensor caído (900s = 15 min para pruebas)\nconst SENSOR_TIMEOUT_SEC = 900;\nconst MAX_NEIGHBOR_KM = 15;\nconst nowMs = Date.now();\n\nfunction haversineKm(lat1, lon1, lat2, lon2) {\n    const R = 6371;\n    const dLat = (lat2 - lat1) * Math.PI / 180;\n    const dLon = (lon2 - lon1) * Math.PI / 180;\n    const a = Math.sin(dLat / 2) ** 2 +\n        Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *\n        Math.sin(dLon / 2) ** 2;\n    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));\n}\n\n// 1. Identificar qué sensores están online\nconst evaluated = activeFires.map(fire => {\n    const updatedMs = fire.updated_at ? Date.parse(fire.updated_at) : 0;\n    const ageSec = (nowMs - updatedMs) / 1000;\n    const isOnline = ageSec <= SENSOR_TIMEOUT_SEC && fire.wind_speed !== null;\n    return { ...fire, isOnline, ageSec: Math.round(ageSec) };\n});\n\nconst onlineSensorsList = evaluated.filter(f => f.isOnline);\n\n// 2. Calcular dirección de avance del fuego y respaldo por vecino <= 15 km\nlet criticalCount = 0;\nlet estimatedCount = 0;\n\nconst enrichedFires = evaluated.map(fire => {\n    const danger = (fire.danger_level || \"UNKNOWN\").toUpperCase();\n    if (danger === \"HIGH\" || danger === \"EXTREME\") criticalCount++;\n\n    let effectiveWindSpeed = fire.wind_speed;\n    let effectiveWindDir = fire.wind_direction;\n    let windSource = \"direct\"; // \"direct\" | \"estimated\" | \"none\"\n    let neighborInfo = null;\n\n    if (!fire.isOnline) {\n        // Buscar el sensor online más cercano dentro de 15 km\n        let bestNeighbor = null;\n        let minDist = Infinity;\n\n        for (const candidate of onlineSensorsList) {\n            if (candidate.fire_id === fire.fire_id) continue;\n            const dist = haversineKm(fire.lat, fire.lon, candidate.lat, candidate.lon);\n            if (dist <= MAX_NEIGHBOR_KM && dist < minDist) {\n                minDist = dist;\n                bestNeighbor = candidate;\n            }\n        }\n\n        if (bestNeighbor) {\n            effectiveWindSpeed = bestNeighbor.wind_speed;\n            effectiveWindDir = bestNeighbor.wind_direction;\n            windSource = \"estimated\";\n            neighborInfo = `${bestNeighbor.sensor_id || bestNeighbor.fire_id} (${minDist.toFixed(1)} km)`;\n            estimatedCount++;\n        } else {\n            effectiveWindSpeed = null;\n            effectiveWindDir = null;\n            windSource = \"none\";\n        }\n    }\n\n    // Open-Meteo da de dónde viene el viento; sumamos 180° para ver hacia dónde avanza el fuego\n    const fireAdvanceDir = (effectiveWindDir !== null && effectiveWindDir !== undefined)\n        ? (effectiveWindDir + 180) % 360\n        : null;\n\n    return {\n        ...fire,\n        effective_wind_speed: effectiveWindSpeed,\n        effective_wind_direction: effectiveWindDir,\n        fire_advance_dir: fireAdvanceDir,\n        wind_source: windSource,\n        neighbor_info: neighborInfo\n    };\n});\n\nreturn [\n    { payload: enrichedFires.length },       // Salida 1: Total focos activos\n    { payload: criticalCount },              // Salida 2: Alertas High/Extreme\n    { payload: onlineSensorsList.length },   // Salida 3: Sensores online\n    { payload: estimatedCount },             // Salida 4: Focos con viento estimado\n    { payload: enrichedFires }               // Salida 5: Datos completos para Mapa/Tabla\n];",
+        "outputs": 5,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 660,
+        "y": 380,
+        "wires": [
+            [
+                "303cce6fc484d586"
+            ],
+            [
+                "da94ff50639cc99d"
+            ],
+            [
+                "1c317dd804d56995"
+            ],
+            [
+                "fbcc782e83898d15"
+            ],
+            [
+                "cab8aa78fe7b3e7c"
+            ]
+        ]
+    },
+    {
+        "id": "303cce6fc484d586",
+        "type": "ui-text",
+        "z": "78c65a12baeaf702",
+        "group": "65d79e360b76afdc",
+        "order": 0,
+        "width": "3",
+        "height": "1",
+        "name": "",
+        "label": "Active Fires",
+        "format": "{{msg.payload}}",
+        "layout": "row-spread",
+        "style": false,
+        "font": "",
+        "fontSize": 16,
+        "color": "#717171",
+        "wrapText": false,
+        "className": "",
+        "value": "payload",
+        "valueType": "msg",
+        "x": 890,
+        "y": 280,
+        "wires": []
+    },
+    {
+        "id": "da94ff50639cc99d",
+        "type": "ui-text",
+        "z": "78c65a12baeaf702",
+        "group": "65d79e360b76afdc",
+        "order": 0,
+        "width": "3",
+        "height": "1",
+        "name": "",
+        "label": "Critical Alerts",
+        "format": "{{msg.payload}}",
+        "layout": "row-spread",
+        "style": false,
+        "font": "",
+        "fontSize": 16,
+        "color": "#717171",
+        "wrapText": false,
+        "className": "",
+        "value": "payload",
+        "valueType": "msg",
+        "x": 890,
+        "y": 340,
+        "wires": []
+    },
+    {
+        "id": "1c317dd804d56995",
+        "type": "ui-text",
+        "z": "78c65a12baeaf702",
+        "group": "65d79e360b76afdc",
+        "order": 0,
+        "width": "3",
+        "height": "1",
+        "name": "",
+        "label": "Online Sensors",
+        "format": "{{msg.payload}}",
+        "layout": "row-spread",
+        "style": false,
+        "font": "",
+        "fontSize": 16,
+        "color": "#717171",
+        "wrapText": false,
+        "className": "",
+        "value": "payload",
+        "valueType": "msg",
+        "x": 900,
+        "y": 400,
+        "wires": []
+    },
+    {
+        "id": "fbcc782e83898d15",
+        "type": "ui-text",
+        "z": "78c65a12baeaf702",
+        "group": "65d79e360b76afdc",
+        "order": 0,
+        "width": "3",
+        "height": "1",
+        "name": "",
+        "label": "Estimated Wind",
+        "format": "{{msg.payload}}",
+        "layout": "row-spread",
+        "style": false,
+        "font": "",
+        "fontSize": 16,
+        "color": "#717171",
+        "wrapText": false,
+        "className": "",
+        "value": "payload",
+        "valueType": "msg",
+        "x": 900,
+        "y": 460,
+        "wires": []
+    },
+    {
+        "id": "cab8aa78fe7b3e7c",
+        "type": "function",
+        "z": "78c65a12baeaf702",
+        "name": "Map Formatter",
+        "func": "const fires = Array.isArray(msg.payload) ? msg.payload : [];\nconst mapItems = [];\n\nconst dangerColors = {\n    LOW: \"#2e7d32\",\n    MEDIUM: \"#f9a825\",\n    HIGH: \"#ef6c00\",\n    EXTREME: \"#c62828\",\n    UNKNOWN: \"#546e7a\"\n};\n\nfor (const fire of fires) {\n    const danger = (fire.danger_level || \"UNKNOWN\").toUpperCase();\n    const color = dangerColors[danger] || dangerColors.UNKNOWN;\n\n    const windLabel = fire.wind_source === \"direct\"\n        ? `Direct sensor (${fire.sensor_id})`\n        : fire.wind_source === \"estimated\"\n            ? `Estimated via neighbor: ${fire.neighbor_info}`\n            : \"Sensor offline (no neighbor within 15 km)\";\n\n    const popupHtml = `\n        <div style=\"font-family: sans-serif; min-width: 190px;\">\n            <b>Region:</b> ${fire.region || \"Unknown\"}<br>\n            <b>Danger Level:</b> <span style=\"color:${color}; font-weight:bold;\">${danger}</span><br>\n            <b>Temp:</b> ${fire.temperature ?? \"N/A\"} °C | <b>Humidity:</b> ${fire.humidity ?? \"N/A\"} %<br>\n            <b>Wind Speed:</b> ${fire.effective_wind_speed ?? \"N/A\"} m/s<br>\n            <b>Spread Direction:</b> ${fire.fire_advance_dir !== null ? fire.fire_advance_dir + \"°\" : \"N/A\"}<br>\n            <b>Wind Source:</b> ${windLabel}<br>\n            <b>Origin:</b> ${fire.simulated ? \"Simulated\" : \"NASA FIRMS\"}\n        </div>\n    `;\n\n    // 1. Marcador principal del incendio (su punta inferior ancla en fire.lat, fire.lon)\n    mapItems.push({\n        name: fire.fire_id,\n        lat: fire.lat,\n        lon: fire.lon,\n        icon: \"fire\",\n        iconColor: color,\n        popuptitle: `Fire ID: ${fire.fire_id}`,\n        popup: popupHtml\n    });\n\n    // 2. Flecha tamaño 58 anclada en píxeles justo debajo de la punta del pin\n    if (fire.fire_advance_dir !== null && fire.effective_wind_speed !== null) {\n        mapItems.push({\n            name: `${fire.fire_id}_arrow`,\n            lat: fire.lat,\n            lon: fire.lon,\n            icon: \"arrow\",\n            iconColor: fire.wind_source === \"estimated\" ? \"#546e7a\" : color,\n            iconSize: 58,\n            hdg: fire.fire_advance_dir,\n            bearing: fire.fire_advance_dir\n        });\n    }\n}\n\nreturn { payload: mapItems };",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 900,
+        "y": 520,
+        "wires": [
+            [
+                "f94b65c90b95a959",
+                "8c4dbfdbf9342975"
+            ]
+        ]
+    },
+    {
+        "id": "f94b65c90b95a959",
+        "type": "worldmap",
+        "z": "78c65a12baeaf702",
+        "name": "Spain Fire Map",
+        "lat": "40.2",
+        "lon": "-3.7",
+        "zoom": "6",
+        "layer": "OSMG",
+        "cluster": "",
+        "maxage": "",
+        "usermenu": "show",
+        "layers": "show",
+        "panit": "false",
+        "panlock": "false",
+        "zoomlock": "false",
+        "hiderightclick": "false",
+        "coords": "none",
+        "showgrid": "false",
+        "showruler": "false",
+        "allowFileDrop": "false",
+        "path": "/worldmap",
+        "overlist": "DR,CO,RA,DN",
+        "maplist": "OSMG,OSMC,EsriC,EsriS,UKOS",
+        "mapname": "",
+        "mapurl": "",
+        "mapopt": "",
+        "mapwms": false,
+        "x": 1120,
+        "y": 520,
+        "wires": []
+    },
+    {
+        "id": "8c4dbfdbf9342975",
+        "type": "ui-template",
+        "z": "78c65a12baeaf702",
+        "group": "18a3eeef71a2c9b1",
+        "page": "",
+        "ui": "",
+        "name": "Map View",
+        "order": 0,
+        "width": "12",
+        "height": "8",
+        "head": "",
+        "format": "<template>\n    <iframe\n        ref=\"mapFrame\"\n        src=\"/worldmap\"\n        style=\"width: 100%; height: 480px; border: none; border-radius: 8px;\"\n        @load=\"applyArrowOffset\">\n    </iframe>\n</template>\n\n<script>\nexport default {\n    mounted() {\n        this.applyArrowOffset();\n        this._styleTimer = setInterval(() => this.applyArrowOffset(), 500);\n    },\n    beforeUnmount() {\n        if (this._styleTimer) clearInterval(this._styleTimer);\n    },\n    methods: {\n        applyArrowOffset() {\n            const doc = this.$refs.mapFrame?.contentDocument;\n            if (!doc || !doc.head) return;\n\n            let style = doc.getElementById('arrow-offset-style');\n            if (!style) {\n                style = doc.createElement('style');\n                style.id = 'arrow-offset-style';\n                doc.head.appendChild(style);\n            }\n            style.textContent = `\n                .leaflet-marker-icon:not(.awesome-marker) {\n                    top: 38px !important;\n                }\n            `;\n        }\n    }\n}\n</script>",
+        "storeOutMessages": true,
+        "passthru": true,
+        "resendOnRefresh": true,
+        "templateScope": "local",
+        "className": "",
+        "x": 1100,
+        "y": 580,
+        "wires": [
+            []
+        ]
+    },
+    {
+        "id": "1eed15b69d5fdf61",
+        "type": "sqlitedb",
+        "db": "/home/alumno/Distributed_Proyect/storage/fires.db",
+        "mode": "RO"
+    },
+    {
+        "id": "65d79e360b76afdc",
+        "type": "ui-group",
+        "name": "System Overview",
+        "page": "6c2610f67426d1b4",
+        "width": "12",
+        "height": 1,
+        "order": -1,
+        "showTitle": true,
+        "className": "",
+        "visible": "true",
+        "disabled": "false",
+        "groupType": "default"
+    },
+    {
+        "id": "18a3eeef71a2c9b1",
+        "type": "ui-group",
+        "name": "Live Fire Map",
+        "page": "6c2610f67426d1b4",
+        "width": "12",
+        "height": 1,
+        "order": -1,
+        "showTitle": true,
+        "className": "",
+        "visible": "true",
+        "disabled": "false",
+        "groupType": "default"
+    },
+    {
+        "id": "6c2610f67426d1b4",
+        "type": "ui-page",
+        "name": "Spain Wildfires",
+        "ui": "ad9d08c4ca280526",
+        "path": "/wildfires",
+        "icon": "home",
+        "layout": "grid",
+        "theme": "34b359b322f7954a",
+        "breakpoints": [
+            {
+                "name": "Default",
+                "px": "0",
+                "cols": "3"
+            },
+            {
+                "name": "Tablet",
+                "px": "576",
+                "cols": "6"
+            },
+            {
+                "name": "Small Desktop",
+                "px": "768",
+                "cols": "9"
+            },
+            {
+                "name": "Desktop",
+                "px": "1024",
+                "cols": "12"
+            }
+        ],
+        "order": -1,
+        "className": "",
+        "visible": true,
+        "disabled": false
+    },
+    {
+        "id": "ad9d08c4ca280526",
+        "type": "ui-base",
+        "name": "My Dashboard",
+        "path": "/dashboard",
+        "appIcon": "",
+        "includeClientData": true,
+        "acceptsClientConfig": [
+            "ui-notification",
+            "ui-control"
+        ],
+        "showPathInSidebar": false,
+        "headerContent": "page",
+        "navigationStyle": "default",
+        "titleBarStyle": "default",
+        "showReconnectNotification": true,
+        "notificationDisplayTime": 1,
+        "showDisconnectNotification": true,
+        "allowInstall": false
+    },
+    {
+        "id": "34b359b322f7954a",
+        "type": "ui-theme",
+        "name": "Theme Name",
+        "colors": {
+            "surface": "#fcfcfd",
+            "primary": "#0d74ce",
+            "bgPage": "#f9f9fb",
+            "groupBg": "#ffffff",
+            "groupOutline": "#d9d9e0"
+        },
+        "sizes": {
+            "density": "default",
+            "pagePadding": "12px",
+            "groupGap": "12px",
+            "groupBorderRadius": "4px",
+            "widgetGap": "12px"
+        }
+    },
+    {
+        "id": "cc2a580f02eb6af7",
+        "type": "global-config",
+        "env": [],
+        "modules": {
+            "node-red-node-sqlite": "2.0.1",
+            "@flowfuse/node-red-dashboard": "1.31.0",
+            "node-red-contrib-web-worldmap": "5.9.2"
+        }
+    }
+]
