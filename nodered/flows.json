@@ -97,7 +97,8 @@
                 "fbcc782e83898d15"
             ],
             [
-                "cab8aa78fe7b3e7c"
+                "cab8aa78fe7b3e7c",
+                "f263de34c179eebe"
             ]
         ]
     },
@@ -202,7 +203,7 @@
         "type": "function",
         "z": "78c65a12baeaf702",
         "name": "Map Formatter",
-        "func": "const fires = Array.isArray(msg.payload) ? msg.payload : [];\nconst mapItems = [];\n\nconst dangerColors = {\n    LOW: \"#2e7d32\",\n    MEDIUM: \"#f9a825\",\n    HIGH: \"#ef6c00\",\n    EXTREME: \"#c62828\",\n    UNKNOWN: \"#546e7a\"\n};\n\nfor (const fire of fires) {\n    const danger = (fire.danger_level || \"UNKNOWN\").toUpperCase();\n    const color = dangerColors[danger] || dangerColors.UNKNOWN;\n\n    const windLabel = fire.wind_source === \"direct\"\n        ? `Direct sensor (${fire.sensor_id})`\n        : fire.wind_source === \"estimated\"\n            ? `Estimated via neighbor: ${fire.neighbor_info}`\n            : \"Sensor offline (no neighbor within 15 km)\";\n\n    const popupHtml = `\n        <div style=\"font-family: sans-serif; min-width: 190px;\">\n            <b>Region:</b> ${fire.region || \"Unknown\"}<br>\n            <b>Danger Level:</b> <span style=\"color:${color}; font-weight:bold;\">${danger}</span><br>\n            <b>Temp:</b> ${fire.temperature ?? \"N/A\"} °C | <b>Humidity:</b> ${fire.humidity ?? \"N/A\"} %<br>\n            <b>Wind Speed:</b> ${fire.effective_wind_speed ?? \"N/A\"} m/s<br>\n            <b>Spread Direction:</b> ${fire.fire_advance_dir !== null ? fire.fire_advance_dir + \"°\" : \"N/A\"}<br>\n            <b>Wind Source:</b> ${windLabel}<br>\n            <b>Origin:</b> ${fire.simulated ? \"Simulated\" : \"NASA FIRMS\"}\n        </div>\n    `;\n\n    // 1. Marcador principal del incendio (su punta inferior ancla en fire.lat, fire.lon)\n    mapItems.push({\n        name: fire.fire_id,\n        lat: fire.lat,\n        lon: fire.lon,\n        icon: \"fire\",\n        iconColor: color,\n        popuptitle: `Fire ID: ${fire.fire_id}`,\n        popup: popupHtml\n    });\n\n    // 2. Flecha tamaño 58 anclada en píxeles justo debajo de la punta del pin\n    if (fire.fire_advance_dir !== null && fire.effective_wind_speed !== null) {\n        mapItems.push({\n            name: `${fire.fire_id}_arrow`,\n            lat: fire.lat,\n            lon: fire.lon,\n            icon: \"arrow\",\n            iconColor: fire.wind_source === \"estimated\" ? \"#546e7a\" : color,\n            iconSize: 58,\n            hdg: fire.fire_advance_dir,\n            bearing: fire.fire_advance_dir\n        });\n    }\n}\n\nreturn { payload: mapItems };",
+        "func": "const fires = Array.isArray(msg.payload) ? msg.payload : [];\nconst mapItems = [];\n\nconst dangerColors = {\n    LOW: \"#2e7d32\",\n    MEDIUM: \"#f9a825\",\n    HIGH: \"#ef6c00\",\n    EXTREME: \"#c62828\",\n    UNKNOWN: \"#546e7a\"\n};\n\nfor (const fire of fires) {\n    const danger = (fire.danger_level || \"UNKNOWN\").toUpperCase();\n    const color = dangerColors[danger] || dangerColors.UNKNOWN;\n\n    const windLabel = fire.wind_source === \"direct\"\n        ? `Direct sensor (${fire.sensor_id})`\n        : fire.wind_source === \"estimated\"\n            ? `Estimated via neighbor: ${fire.neighbor_info}`\n            : \"Sensor offline (no neighbor within 15 km)\";\n\n    const popupHtml = `\n        <div style=\"font-family: sans-serif; min-width: 190px;\">\n            <b>Region:</b> ${fire.region || \"Unknown\"}<br>\n            <b>Danger Level:</b> <span style=\"color:${color}; font-weight:bold;\">${danger}</span><br>\n            <b>Temp:</b> ${fire.temperature ?? \"N/A\"} °C | <b>Humidity:</b> ${fire.humidity ?? \"N/A\"} %<br>\n            <b>Wind Speed:</b> ${fire.effective_wind_speed ?? \"N/A\"} m/s<br>\n            <b>Spread Direction:</b> ${fire.fire_advance_dir !== null ? fire.fire_advance_dir + \"°\" : \"N/A\"}<br>\n            <b>Wind Source:</b> ${windLabel}<br>\n            <b>Origin:</b> ${fire.simulated ? \"Simulated\" : \"NASA FIRMS\"}\n        </div>\n    `;\n\n    // 1. Marcador principal del incendio\n    mapItems.push({\n        name: fire.fire_id,\n        lat: fire.lat,\n        lon: fire.lon,\n        icon: \"fire\",\n        iconColor: color,\n        popuptitle: `Fire ID: ${fire.fire_id}`,\n        popup: popupHtml\n    });\n\n    // 2. Flecha SVG dinámica rotada según fire_advance_dir\n    if (fire.fire_advance_dir !== null && fire.effective_wind_speed !== null) {\n        const arrowColor = color;\n        const strokeStyle = fire.wind_source === \"estimated\" ? 'stroke-dasharray=\"5,3\"' : '';\n        const angle = fire.fire_advance_dir;\n\n        const arrowSvg = `<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 64 64\" width=\"58\" height=\"58\"><polygon points=\"32,6 52,56 32,44 12,56\" fill=\"${arrowColor}\" stroke=\"#ffffff\" stroke-width=\"3\" stroke-linejoin=\"round\" transform=\"rotate(${angle} 32 32)\" ${strokeStyle}/></svg>`;\n        const arrowIcon = `data:image/svg+xml;base64,${Buffer.from(arrowSvg).toString(\"base64\")}`;\n\n        mapItems.push({\n            name: `${fire.fire_id}_arrow`,\n            lat: fire.lat,\n            lon: fire.lon,\n            icon: arrowIcon,\n            iconSize: 58,\n            hdg: angle,\n            bearing: angle\n        });\n    }\n}\n\nreturn { payload: mapItems };",
         "outputs": 1,
         "timeout": 0,
         "noerr": 0,
@@ -254,7 +255,7 @@
         "id": "8c4dbfdbf9342975",
         "type": "ui-template",
         "z": "78c65a12baeaf702",
-        "group": "18a3eeef71a2c9b1",
+        "group": "f0b5098caa19f5f4",
         "page": "",
         "ui": "",
         "name": "Map View",
@@ -268,8 +269,52 @@
         "resendOnRefresh": true,
         "templateScope": "local",
         "className": "",
-        "x": 1100,
+        "x": 1120,
         "y": 580,
+        "wires": [
+            []
+        ]
+    },
+    {
+        "id": "f263de34c179eebe",
+        "type": "function",
+        "z": "78c65a12baeaf702",
+        "name": "Table Formatter",
+        "func": "const fires = Array.isArray(msg.payload) ? msg.payload : [];\n\nconst dangerStyles = {\n    LOW: \"background:#e8f5e9; color:#2e7d32;\",\n    MEDIUM: \"background:#fff8e1; color:#f57f17;\",\n    HIGH: \"background:#fff3e0; color:#ef6c00;\",\n    EXTREME: \"background:#ffebee; color:#c62828;\",\n    UNKNOWN: \"background:#eceff1; color:#546e7a;\"\n};\n\nconst rows = fires.map(fire => {\n    const danger = (fire.danger_level || \"UNKNOWN\").toUpperCase();\n    const badgeStyle = dangerStyles[danger] || dangerStyles.UNKNOWN;\n\n    let sourceText = \"Offline (no neighbor ≤ 15 km)\";\n    let sourceColor = \"#c62828\";\n\n    if (fire.wind_source === \"direct\") {\n        sourceText = `Direct (${fire.sensor_id || \"sensor\"})`;\n        sourceColor = \"#2e7d32\";\n    } else if (fire.wind_source === \"estimated\") {\n        sourceText = `Estimated via ${fire.neighbor_info}`;\n        sourceColor = \"#0277bd\";\n    }\n\n    return {\n        fire_id: fire.fire_id,\n        region: fire.region || \"Unknown\",\n        danger,\n        badgeStyle,\n        coords: `${Number(fire.lat).toFixed(4)}, ${Number(fire.lon).toFixed(4)}`,\n        weather: `${fire.temperature ?? \"N/A\"} °C / ${fire.humidity ?? \"N/A\"} %`,\n        wind: fire.effective_wind_speed !== null\n            ? `${fire.effective_wind_speed} m/s → ${fire.fire_advance_dir}°`\n            : \"N/A\",\n        sourceText,\n        sourceColor,\n        origin: fire.simulated ? \"Simulated\" : \"NASA FIRMS\"\n    };\n});\n\nreturn { payload: rows };",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 900,
+        "y": 660,
+        "wires": [
+            [
+                "9d60f5d004456d48"
+            ]
+        ]
+    },
+    {
+        "id": "9d60f5d004456d48",
+        "type": "ui-template",
+        "z": "78c65a12baeaf702",
+        "group": "18a3eeef71a2c9b1",
+        "page": "",
+        "ui": "",
+        "name": "Incidents Table",
+        "order": 0,
+        "width": "12",
+        "height": "4",
+        "head": "",
+        "format": "<template>\n    <div style=\"overflow-x: auto; font-family: sans-serif;\">\n        <table style=\"width: 100%; border-collapse: collapse; text-align: left; font-size: 14px;\">\n            <thead>\n                <tr style=\"border-bottom: 2px solid #e0e0e0; color: #455a64;\">\n                    <th style=\"padding: 10px 12px;\">Fire ID</th>\n                    <th style=\"padding: 10px 12px;\">Region</th>\n                    <th style=\"padding: 10px 12px;\">Danger Level</th>\n                    <th style=\"padding: 10px 12px;\">Temp / Humidity</th>\n                    <th style=\"padding: 10px 12px;\">Wind &amp; Spread</th>\n                    <th style=\"padding: 10px 12px;\">Wind Source</th>\n                    <th style=\"padding: 10px 12px;\">Origin</th>\n                </tr>\n            </thead>\n            <tbody>\n                <tr v-if=\"!msg?.payload || msg.payload.length === 0\">\n                    <td colspan=\"7\" style=\"padding: 16px; text-align: center; color: #78909c;\">\n                        No active wildfires reported.\n                    </td>\n                </tr>\n                <tr v-for=\"row in (msg?.payload || [])\" :key=\"row.fire_id\" style=\"border-bottom: 1px solid #eeeeee;\">\n                    <td style=\"padding: 10px 12px; font-weight: 600;\">{{ row.fire_id }}</td>\n                    <td style=\"padding: 10px 12px;\">{{ row.region }}</td>\n                    <td style=\"padding: 10px 12px;\">\n                        <span :style=\"row.badgeStyle + ' padding: 3px 9px; border-radius: 12px; font-weight: 700; font-size: 12px;'\">\n                            {{ row.danger }}\n                        </span>\n                    </td>\n                    <td style=\"padding: 10px 12px;\">{{ row.weather }}</td>\n                    <td style=\"padding: 10px 12px; font-weight: 500;\">{{ row.wind }}</td>\n                    <td :style=\"'padding: 10px 12px; font-weight: 600; color:' + row.sourceColor + ';'\">\n                        {{ row.sourceText }}\n                    </td>\n                    <td style=\"padding: 10px 12px; color: #546e7a;\">{{ row.origin }}</td>\n                </tr>\n            </tbody>\n        </table>\n    </div>\n</template>",
+        "storeOutMessages": true,
+        "passthru": true,
+        "resendOnRefresh": true,
+        "templateScope": "local",
+        "className": "",
+        "x": 1100,
+        "y": 660,
         "wires": [
             []
         ]
@@ -295,9 +340,23 @@
         "groupType": "default"
     },
     {
-        "id": "18a3eeef71a2c9b1",
+        "id": "f0b5098caa19f5f4",
         "type": "ui-group",
         "name": "Live Fire Map",
+        "page": "6c2610f67426d1b4",
+        "width": "12",
+        "height": 1,
+        "order": -1,
+        "showTitle": true,
+        "className": "",
+        "visible": "true",
+        "disabled": "false",
+        "groupType": "default"
+    },
+    {
+        "id": "18a3eeef71a2c9b1",
+        "type": "ui-group",
+        "name": "Incident Details",
         "page": "6c2610f67426d1b4",
         "width": "12",
         "height": 1,
@@ -384,7 +443,7 @@
         }
     },
     {
-        "id": "cc2a580f02eb6af7",
+        "id": "fd0802ca94ddcbd4",
         "type": "global-config",
         "env": [],
         "modules": {
