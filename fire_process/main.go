@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"encoding/json"
 	"fmt"
 	"log"
 	"main/hivemq"
@@ -15,12 +16,15 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/confluentinc/confluent-kafka-go/v2/kafka"
 	amqp "github.com/rabbitmq/amqp091-go"
 )
 
 type FireProcess struct {
-	hiveMQ   hivemq.HiveMqConn
-	rabbitMQ rabbit.RabbitConn
+	hiveMQ        hivemq.HiveMqConn
+	rabbitMQ      rabbit.RabbitConn
+	windCh        chan hivemq.WindTelemetryPayload
+	kafkaProducer *kafka.Producer
 }
 
 var VALOR_MAP = "PEPRITIONS"
@@ -34,6 +38,73 @@ func generarUUID() string {
 	b[8] = (b[8] & 0x3f) | 0x80
 
 	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:])
+}
+
+func (fp *FireProcess) PublishKafka(ctx context.Context, topic, key string, value []byte) error {
+	if fp == nil || fp.kafkaProducer == nil {
+		return fmt.Errorf("kafka producer no inicializado")
+	}
+
+	deliveryChan := make(chan kafka.Event, 1)
+	defer close(deliveryChan)
+
+	t := topic
+	err := fp.kafkaProducer.Produce(&kafka.Message{
+		TopicPartition: kafka.TopicPartition{
+			Topic:     &t,
+			Partition: kafka.PartitionAny,
+		},
+		Key:   []byte(key),
+		Value: value,
+	}, deliveryChan)
+	if err != nil {
+		return fmt.Errorf("encolando mensaje en Kafka (%s): %w", topic, err)
+	}
+
+	select {
+	case ev := <-deliveryChan:
+		m, ok := ev.(*kafka.Message)
+		if !ok {
+			return fmt.Errorf("evento inesperado de Kafka: %T", ev)
+		}
+		if m.TopicPartition.Error != nil {
+			return fmt.Errorf("error entregando a %s: %w", topic, m.TopicPartition.Error)
+		}
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(5 * time.Second):
+		return fmt.Errorf("timeout esperando ack de Kafka en %s", topic)
+	}
+}
+
+func procesarTelemetriaViento(ctx context.Context, windCh <-chan hivemq.WindTelemetryPayload) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case t, ok := <-windCh:
+			if !ok {
+				return
+			}
+
+			log.Printf("[WIND] Foco %s | Sensor %s (%s) | Viento: %.1f km/h (dir %.0f°) | Temp: %.1f°C | Hum: %.0f%%",
+				t.FireID, t.SensorID, t.Region, t.WindSpeed, t.WindDirection, t.Temperature, t.Humidity)
+
+			// Regla de ejemplo: viento fuerte (>= 30 km/h) y baja humedad (<= 25%)
+			if t.WindSpeed >= 30.0 && t.Humidity <= 25.0 {
+				log.Printf("[RIESGO ALTO] Propagación favorable en %s por sensor %s (viento %.1f km/h, humedad %.0f%%)",
+					t.FireID, t.SensorID, t.WindSpeed, t.Humidity)
+			}
+
+			_, err := json.Marshal(t)
+			if err != nil {
+				log.Printf("[KAFKA] Error serializando telemetría a JSON: %v", err)
+			} /*else if err := fp.PublishKafka(ctx, "fires.severity.low", t.FireID, payload); err != nil {
+				log.Printf("[KAFKA] Error publicando en fires.severity.low: %v", err)
+			}*/
+		}
+	}
 }
 
 func runCycle(ctx context.Context, fire_process *FireProcess, msgs <-chan amqp.Delivery) error {
@@ -85,21 +156,34 @@ func runCycle(ctx context.Context, fire_process *FireProcess, msgs <-chan amqp.D
 				if valor > 0 {
 					fires, err := fire.FirePetition(valor)
 
-					// Aqui gestionamos como de peligroso parece el incendio
-					for idx, f := range fires {
-						log.Printf("Foco #%d -> lat=%.4f lon=%.4f FRP=%.1f conf=%s",
-							idx+1, f.Latitude, f.Longitude, f.FRP, f.Confidence)
+					if err != nil {
+						log.Printf("Error en las peticiones de FirePetition %v", err)
+					}
 
-						if f.Confidence == "h" {
+					if len(fires) > 0 {
+
+						// Aqui gestionamos como de peligroso parece el incendio
+						for idx, f := range fires {
+							log.Printf("Foco #%d -> lat=%.4f lon=%.4f FRP=%.1f conf=%s",
+								idx+1, f.Latitude, f.Longitude, f.FRP, f.Confidence)
+
+							//if f.Confidence == "h" {
 							fire_process.hiveMQ.PublishFireActivate(f.Latitude, f.Longitude)
+
+							err := fire_process.hiveMQ.SubscribeWindForFire(f.Latitude, f.Longitude, func(t hivemq.WindTelemetryPayload) {
+								select {
+								case <-ctx.Done():
+								case fire_process.windCh <- t:
+								}
+							})
+
+							if err != nil {
+								log.Printf("Error aceptando peticiones de los sensores %v", err)
+							}
+							//}
 						}
 					}
 
-					if err != nil {
-						log.Printf("Error en las peticiones de FirePetition %v", err)
-					} else if len(fires) > 0 {
-						log.Print("Hemos detectado un incendio!! Procedemos")
-					}
 				}
 				return nil
 			}
@@ -108,6 +192,20 @@ func runCycle(ctx context.Context, fire_process *FireProcess, msgs <-chan amqp.D
 }
 
 func handleRabbitPetition(ctx context.Context) {
+
+	kafkaBrokers := "localhost:9092"
+
+	kp, err := kafka.NewProducer(&kafka.ConfigMap{
+		"bootstrap.servers": kafkaBrokers,
+		"acks":              "1",
+	})
+	if err != nil {
+		log.Fatalf("error creando kafka producer: %v", err)
+	}
+	defer func() {
+		kp.Flush(5000)
+		kp.Close()
+	}()
 
 	hiveMq, err := hivemq.NewMQTTClient(VALOR_MAP)
 	if err != nil {
@@ -127,7 +225,15 @@ func handleRabbitPetition(ctx context.Context) {
 		log.Fatalf("Error consumiendo respuestas: %v", err)
 	}
 
-	fireProcess := &FireProcess{hiveMQ: *hiveMq, rabbitMQ: *r}
+	// declaramos la estructura de FireProcess
+	fireProcess := &FireProcess{
+		hiveMQ:        *hiveMq,
+		rabbitMQ:      *r,
+		windCh:        make(chan hivemq.WindTelemetryPayload, 100),
+		kafkaProducer: kp,
+	}
+
+	go procesarTelemetriaViento(ctx, fireProcess.windCh)
 
 	for {
 		if err := runCycle(ctx, fireProcess, msgs); err != nil {

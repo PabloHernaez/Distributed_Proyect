@@ -36,6 +36,22 @@ type LWTStatusPayload struct {
 	Reason   string `json:"reason"`
 }
 
+type WindTelemetryPayload struct {
+	FireID        string  `json:"fire_id"`
+	FocoLat       float64 `json:"foco_lat"`
+	FocoLon       float64 `json:"foco_lon"`
+	SensorID      string  `json:"sensor_id"`
+	Region        string  `json:"region"`
+	SensorLat     float64 `json:"sensor_lat"`
+	SensorLon     float64 `json:"sensor_lon"`
+	WindSpeed     float64 `json:"wind_speed"`
+	WindDirection float64 `json:"wind_direction"`
+	Temperature   float64 `json:"temperature"`
+	Humidity      float64 `json:"humidity"`
+	Rain          float64 `json:"rain"`
+	Timestamp     string  `json:"timestamp"`
+}
+
 type HiveMqConn struct {
 	Client mqtt.Client
 }
@@ -123,5 +139,30 @@ func (h *HiveMqConn) PublishFireActivate(lat float64, lon float64) error {
 	if token.Error() != nil {
 		return fmt.Errorf("publicando en %s: %w", mqttAlertasTopic, token.Error())
 	}
+	return nil
+}
+
+func (h *HiveMqConn) SubscribeWindForFire(lat, lon float64, onTelemetry func(WindTelemetryPayload)) error {
+	if h == nil || h.Client == nil {
+		return fmt.Errorf("conexión MQTT no inicializada")
+	}
+
+	coordTag := fmt.Sprintf("%.4f&%.4f", lat, lon)
+	topic := fmt.Sprintf("sensors/wind/%s", coordTag)
+
+	token := h.Client.Subscribe(topic, 1, func(_ mqtt.Client, msg mqtt.Message) {
+		var data WindTelemetryPayload
+		if err := json.Unmarshal(msg.Payload(), &data); err != nil {
+			log.Printf("[MQTT] Error parseando telemetría en %s: %v", msg.Topic(), err)
+			return
+		}
+		onTelemetry(data)
+	})
+	token.Wait()
+	if token.Error() != nil {
+		return fmt.Errorf("suscribiendo a %s: %w", topic, token.Error())
+	}
+
+	log.Printf("[MQTT] Listener activo en %s", topic)
 	return nil
 }

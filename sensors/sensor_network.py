@@ -8,11 +8,12 @@ import paho.mqtt.client as mqtt
 import requests
 
 # Broker MQTT y parámetros generales
-BROKER = "broker.hivemq.com"
+BROKER = "localhost"
 PORT = 1883
 
 TOPIC_ALERTAS = "ssdd_espana_incendios_2026/alertas"
 TOPIC_TELEMETRIA = "ssdd_espana_incendios_2026/telemetria"
+TOPIC_WIND = "sensors/wind/"
 
 INTERVALO_ENVIO_SEG = 15       # Cada cuánto emite telemetría un sensor activo
 CACHE_OPEN_METEO_SEG = 900    # 15 min de caché por sensor para no saturar la API
@@ -147,6 +148,7 @@ def on_message(client, userdata, msg):
         despiertos = []
         expiracion = time.time() + TTL_INCENDIO_SEG
 
+
         for s in SENSORES:
             dist = distancia_haversine_km(s["lat"], s["lon"], float(lat), float(lon))
             if dist <= float(radius_km):
@@ -200,6 +202,10 @@ def bucle_telemetria(client):
                     "simulated": 0,
                     "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
                 }
+
+                wind = f"{TOPIC_WIND}{fire_id}"
+
+                client.publish(wind, json.dumps(mensaje))
                 client.publish(TOPIC_TELEMETRIA, json.dumps(mensaje))
                 print(
                     f"[TELEMETRY] {s['sensor_id']} -> {fire_id} | "

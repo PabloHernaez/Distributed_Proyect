@@ -16,6 +16,8 @@ var SATELITE_LIST = []string{
 	"MODIS_SP",
 }
 
+var MAP_KEY = "1d776a369ffd5e3c4d5842ec77c7146d"
+
 func FirePetition(count int) ([]models.FireData, error) {
 	// Nos encargamos de hacer la peticion a la api de los mapas
 	if count == 0 {
