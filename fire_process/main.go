@@ -1,0 +1,154 @@
+package main
+
+import (
+	"context"
+	"crypto/rand"
+	"fmt"
+	"log"
+	"main/hivemq"
+	fire "main/httpPetition"
+	"main/rabbit"
+	"os"
+	"os/signal"
+	"strconv"
+	"strings"
+	"syscall"
+	"time"
+
+	amqp "github.com/rabbitmq/amqp091-go"
+)
+
+type FireProcess struct {
+	hiveMQ   hivemq.HiveMqConn
+	rabbitMQ rabbit.RabbitConn
+}
+
+var VALOR_MAP = "PEPRITIONS"
+
+func generarUUID() string {
+	b := make([]byte, 16)
+	_, _ = rand.Read(b)
+
+	// Versión 4 y variante RFC 4122
+	b[6] = (b[6] & 0x0f) | 0x40
+	b[8] = (b[8] & 0x3f) | 0x80
+
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:])
+}
+
+func runCycle(ctx context.Context, fire_process *FireProcess, msgs <-chan amqp.Delivery) error {
+
+	corrID := generarUUID()
+
+	message := "Asking for petitions"
+
+	reqCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	log.Println("[Emisor] Enviando tarea...")
+	err := fire_process.rabbitMQ.Channel.PublishWithContext(reqCtx,
+		"",
+		"scheduler_queue",
+		false,
+		false,
+		amqp.Publishing{
+			DeliveryMode:  amqp.Persistent,
+			ContentType:   "text/plain",
+			CorrelationId: corrID,
+			ReplyTo:       fire_process.rabbitMQ.Queue.Name,
+			Body:          []byte(message),
+		},
+	)
+	if err != nil {
+		return fmt.Errorf("error publicando mensaje: %w", err)
+	}
+
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-reqCtx.Done():
+			return fmt.Errorf("[Emisor] Timeout esperando respuesta del worker")
+		case d, ok := <-msgs:
+			if !ok {
+				return fmt.Errorf("canal de mensajes cerrado")
+			}
+			if corrID == d.CorrelationId {
+				valorStr := strings.TrimSpace(string(d.Body))
+				valor, err := strconv.Atoi(valorStr)
+				if err != nil {
+					return fmt.Errorf("respuesta no numérica (%q): %w", valorStr, err)
+				}
+
+				log.Printf("[Emisor] Respuesta recibida -> %d", valor)
+
+				if valor > 0 {
+					fires, err := fire.FirePetition(valor)
+
+					// Aqui gestionamos como de peligroso parece el incendio
+					for idx, f := range fires {
+						log.Printf("Foco #%d -> lat=%.4f lon=%.4f FRP=%.1f conf=%s",
+							idx+1, f.Latitude, f.Longitude, f.FRP, f.Confidence)
+
+						if f.Confidence == "h" {
+							fire_process.hiveMQ.PublishFireActivate(f.Latitude, f.Longitude)
+						}
+					}
+
+					if err != nil {
+						log.Printf("Error en las peticiones de FirePetition %v", err)
+					} else if len(fires) > 0 {
+						log.Print("Hemos detectado un incendio!! Procedemos")
+					}
+				}
+				return nil
+			}
+		}
+	}
+}
+
+func handleRabbitPetition(ctx context.Context) {
+
+	hiveMq, err := hivemq.NewMQTTClient(VALOR_MAP)
+	if err != nil {
+		log.Fatalf("Error al iniciarse el broker de HIveMQ: %v", err)
+	}
+
+	defer hiveMq.Close(VALOR_MAP)
+
+	r, err := rabbit.NewRabbitConn()
+	if err != nil {
+		log.Fatalf("Fallo al iniciar RabbitMQ: %v", err)
+	}
+	defer r.Close()
+
+	msgs, err := r.Channel.Consume(r.Queue.Name, "", true, false, false, false, nil)
+	if err != nil {
+		log.Fatalf("Error consumiendo respuestas: %v", err)
+	}
+
+	fireProcess := &FireProcess{hiveMQ: *hiveMq, rabbitMQ: *r}
+
+	for {
+		if err := runCycle(ctx, fireProcess, msgs); err != nil {
+			if ctx.Err() != nil {
+				return
+			}
+			log.Printf("Error en ciclo: %v", err)
+		}
+
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(5 * time.Second):
+		}
+	}
+}
+
+func main() {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	handleRabbitPetition(ctx)
+	log.Println("Aplicación detenida limpiamente.")
+}
