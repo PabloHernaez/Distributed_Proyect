@@ -38,8 +38,6 @@ type LWTStatusPayload struct {
 
 type WindTelemetryPayload struct {
 	FireID        string  `json:"fire_id"`
-	FocoLat       float64 `json:"foco_lat"`
-	FocoLon       float64 `json:"foco_lon"`
 	SensorID      string  `json:"sensor_id"`
 	Region        string  `json:"region"`
 	SensorLat     float64 `json:"sensor_lat"`

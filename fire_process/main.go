@@ -115,6 +115,8 @@ func (fp *FireProcess) procesarTelemetriaViento(ctx context.Context, windCh <-ch
 				}
 				//caso de low
 				severity += "low"
+			} else {
+				severity += "low"
 			}
 
 			if err := fp.PublishKafka(ctx, severity, t.FireID, payload); err != nil {
