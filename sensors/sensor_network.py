@@ -14,6 +14,7 @@ PORT = 1883
 TOPIC_ALERTAS = "ssdd_espana_incendios_2026/alertas"
 TOPIC_TELEMETRIA = "ssdd_espana_incendios_2026/telemetria"
 TOPIC_WIND = "sensors/wind/"
+TOPIC_LWT = "ssdd_espana_incendios_2026/status/sensor_network"
 
 INTERVALO_ENVIO_SEG = 15       # Cada cuánto emite telemetría un sensor activo
 CACHE_OPEN_METEO_SEG = 900    # 15 min de caché por sensor para no saturar la API
@@ -107,7 +108,16 @@ def obtener_datos_open_meteo(sensor):
 
 def on_connect(client, userdata, flags, reason_code, properties=None):
     print(f"[CONNECTED] HiveMQ broker ({BROKER}). {len(SENSORES)} sensors initialized in standby mode.")
-    client.subscribe(TOPIC_ALERTAS)
+    
+    # Last Will Testament (LWT)
+    online_payload = json.dumps({
+        "client_id": "sensor-network-spain",
+        "status": "online",
+        "sensors_count": len(SENSORES)
+    })
+    client.publish(TOPIC_LWT, payload=online_payload, qos=1, retain=True)
+    
+    client.subscribe([(TOPIC_ALERTAS, 1), ("monitoring/fires", 1)])
     print(f"[SUBSCRIBED] Listening for fire alerts on: {TOPIC_ALERTAS}")
 
 
@@ -194,6 +204,8 @@ def bucle_telemetria(client):
                     "region": s["region"],
                     "lat": s["lat"],
                     "lon": s["lon"],
+                    "sensor_lat": s["lat"], 
+                    "sensor_lon": s["lon"],
                     "temperature": clima["temperature"],
                     "humidity": clima["humidity"],
                     "wind_speed": clima["wind_speed"],
@@ -206,7 +218,7 @@ def bucle_telemetria(client):
                 wind = f"{TOPIC_WIND}{fire_id}"
 
                 client.publish(wind, json.dumps(mensaje))
-                client.publish(TOPIC_TELEMETRIA, json.dumps(mensaje))
+                client.publish(TOPIC_TELEMETRIA, json.dumps(mensaje), qos=1); client.publish(f"monitoring/sensors/{s['lat']}&{s['lon']}", json.dumps(mensaje), qos=1); client.publish(f"monitoring/sensors/{s['lat']}&{s['lon']}", json.dumps(mensaje), qos=1)
                 print(
                     f"[TELEMETRY] {s['sensor_id']} -> {fire_id} | "
                     f"Temp: {clima['temperature']}°C | Humidity: {clima['humidity']}% | "
@@ -225,6 +237,14 @@ if __name__ == "__main__":
     client.on_connect = on_connect
     client.on_message = on_message
 
+    #  LWT
+    lwt_payload = json.dumps({
+        "client_id": "sensor-network-spain",
+        "status": "offline",
+        "reason": "unexpected_disconnect"
+    })
+    client.will_set(TOPIC_LWT, payload=lwt_payload, qos=1, retain=True)
+    
     client.connect(BROKER, PORT, 60)
 
     hilo_envio = threading.Thread(target=bucle_telemetria, args=(client,), daemon=True)
