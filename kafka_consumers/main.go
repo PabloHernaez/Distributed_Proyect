@@ -13,7 +13,7 @@ import (
 	"github.com/confluentinc/confluent-kafka-go/v2/kafka"
 )
 
-const monitoringForwardTopic = "monitoring"
+const monitoringForwardTopic = "fires.monitoring"
 
 func main() {
 	brokers := "localhost:9092"
@@ -173,8 +173,10 @@ func forwardToMonitoring(ctx context.Context, producer *kafka.Producer, src *kaf
 }
 
 func handleLowMedium(msg *kafka.Message) error {
+
 	fmt.Printf("[LOW/MEDIUM] topic=%s partition=%d zoneKey=%s offset=%d payload=%s\n",
 		*msg.TopicPartition.Topic, msg.TopicPartition.Partition, string(msg.Key), msg.TopicPartition.Offset, string(msg.Value))
+
 	return nil
 }
 

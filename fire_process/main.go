@@ -78,7 +78,7 @@ func (fp *FireProcess) PublishKafka(ctx context.Context, topic, key string, valu
 	}
 }
 
-func procesarTelemetriaViento(ctx context.Context, windCh <-chan hivemq.WindTelemetryPayload) {
+func (fp *FireProcess) procesarTelemetriaViento(ctx context.Context, windCh <-chan hivemq.WindTelemetryPayload) {
 	for {
 		select {
 		case <-ctx.Done():
@@ -91,18 +91,35 @@ func procesarTelemetriaViento(ctx context.Context, windCh <-chan hivemq.WindTele
 			log.Printf("[WIND] Foco %s | Sensor %s (%s) | Viento: %.1f km/h (dir %.0f°) | Temp: %.1f°C | Hum: %.0f%%",
 				t.FireID, t.SensorID, t.Region, t.WindSpeed, t.WindDirection, t.Temperature, t.Humidity)
 
-			// Regla de ejemplo: viento fuerte (>= 30 km/h) y baja humedad (<= 25%)
-			if t.WindSpeed >= 30.0 && t.Humidity <= 25.0 {
-				log.Printf("[RIESGO ALTO] Propagación favorable en %s por sensor %s (viento %.1f km/h, humedad %.0f%%)",
-					t.FireID, t.SensorID, t.WindSpeed, t.Humidity)
-			}
-
-			_, err := json.Marshal(t)
+			payload, err := json.Marshal(t)
 			if err != nil {
 				log.Printf("[KAFKA] Error serializando telemetría a JSON: %v", err)
-			} /*else if err := fp.PublishKafka(ctx, "fires.severity.low", t.FireID, payload); err != nil {
+
+			}
+
+			severity := "fires.severity."
+
+			if t.WindSpeed >= 30.0 {
+				if t.Humidity <= 25.0 {
+
+					if t.Temperature >= 30.0 {
+						if t.Rain <= 1 {
+							severity += "extreme"
+							//caso de extreme
+						}
+						//caso de hard
+						severity += "hard"
+					}
+					//caso de medium
+					severity += "medium"
+				}
+				//caso de low
+				severity += "low"
+			}
+
+			if err := fp.PublishKafka(ctx, severity, t.FireID, payload); err != nil {
 				log.Printf("[KAFKA] Error publicando en fires.severity.low: %v", err)
-			}*/
+			}
 		}
 	}
 }
@@ -115,6 +132,10 @@ func runCycle(ctx context.Context, fire_process *FireProcess, msgs <-chan amqp.D
 
 	reqCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
+
+	if fire_process.rabbitMQ.Channel == nil || fire_process.rabbitMQ.Channel.IsClosed() {
+		return fmt.Errorf("canal de RabbitMQ cerrado o no inicializado")
+	}
 
 	log.Println("[Emisor] Enviando tarea...")
 	err := fire_process.rabbitMQ.Channel.PublishWithContext(reqCtx,
@@ -233,7 +254,7 @@ func handleRabbitPetition(ctx context.Context) {
 		kafkaProducer: kp,
 	}
 
-	go procesarTelemetriaViento(ctx, fireProcess.windCh)
+	go fireProcess.procesarTelemetriaViento(ctx, fireProcess.windCh)
 
 	for {
 		if err := runCycle(ctx, fireProcess, msgs); err != nil {
